@@ -1,0 +1,15 @@
+# Секреты и учётные данные — НИКОГДА не коммитить
+.env
+
+# Сессия Telethon = полный доступ к вашему TG-аккаунту
+*.session
+*.session-journal
+
+# Логи и рантайм
+digest.log
+*.log
+
+# Python
+venv/
+__pycache__/
+*.pyc

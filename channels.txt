@@ -1,0 +1,7 @@
+# По одному username открытого канала на строку, @ необязателен.
+# Строки с # игнорируются. Замените на свои источники.
+ai_newz
+seeallochnaya
+gonzo_ML
+denissexy
+opendatascience
