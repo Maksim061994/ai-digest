@@ -1,0 +1,21 @@
+services:
+  digest:
+    build: .
+    image: ai-digest
+    container_name: ai-digest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Время срабатывания cron (06:00) по этой зоне. Держите в согласии с DIGEST_TZ в .env.
+      TZ: Europe/Moscow
+      # Страховка: гарантированно пустой ключ, чтобы claude -p шёл в подписку, а не в платный API.
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      # Код + channels.txt + файл сессии Telethon (digest_session.session) — на хосте, переживают пересборку.
+      - .:/app
+      # Авторизация Claude по подписке (OAuth-токен) — в отдельном volume.
+      - claude-auth:/root/.claude
+    command: supercronic /app/crontab
+
+volumes:
+  claude-auth:
