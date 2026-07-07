@@ -6,16 +6,13 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # Время срабатывания cron (06:00) по этой зоне. Держите в согласии с DIGEST_TZ в .env.
+      # Таймзона, по которой планировщик срабатывает в RUN_AT. Держите в согласии с DIGEST_TZ в .env.
       TZ: Europe/Moscow
+      # Время ежедневного запуска дайджеста (HH:MM). По умолчанию 06:00 — можно не задавать.
+      RUN_AT: "06:00"
       # Страховка: гарантированно пустой ключ, чтобы claude -p шёл в подписку, а не в платный API.
       ANTHROPIC_API_KEY: ""
     volumes:
       # Код + channels.txt + файл сессии Telethon (digest_session.session) — на хосте, переживают пересборку.
       - .:/app
-      # Авторизация Claude по подписке (OAuth-токен) — в отдельном volume.
-      - claude-auth:/root/.claude
-    command: supercronic /app/crontab
-
-volumes:
-  claude-auth:
+    # Авторизация Claude — через CLAUDE_CODE_OAUTH_TOKEN из .env (env_file), volume не нужен.

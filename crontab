@@ -1,3 +1,0 @@
-# supercronic-crontab. Время трактуется по TZ контейнера (задаётся в docker-compose.yml).
-# Вывод команды идёт в stdout supercronic → виден в `docker compose logs`.
-0 6 * * * cd /app && python digest.py
