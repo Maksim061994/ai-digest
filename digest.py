@@ -47,6 +47,10 @@ CHANNELS = [
 MAX_POST_CHARS = 2500        # обрезка очень длинных постов перед отправкой в LLM
 TG_MESSAGE_LIMIT = 4096      # лимит Telegram на одно сообщение
 
+HISTORY_DIR = BASE_DIR / "history"   # сюда сохраняются опубликованные дайджесты
+# Сколько прошлых выпусков показывать модели, чтобы не повторять вчерашние новости
+LOOKBACK_DAYS = int(os.environ.get("DEDUP_LOOKBACK_DAYS", "2"))
+
 # ---------------------------------------------------------------- сбор постов
 
 
@@ -83,12 +87,57 @@ async def collect_posts(day_start: datetime, day_end: datetime) -> list[dict]:
     return posts
 
 
+# ------------------------------------------------------ история / дедупликация
+
+
+def load_recent_digests(before_date, n: int) -> list[tuple]:
+    """До n последних опубликованных дайджестов с датой раньше before_date."""
+    if n <= 0 or not HISTORY_DIR.exists():
+        return []
+    items = []
+    for f in HISTORY_DIR.glob("*.html"):
+        try:
+            d = datetime.strptime(f.stem, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < before_date:
+            items.append((d, f))
+    items.sort(key=lambda x: x[0])
+    return [(d, f.read_text(encoding="utf-8")) for d, f in items[-n:]]
+
+
+def save_digest(day_start: datetime, text: str) -> None:
+    """Сохраняет опубликованный дайджест в history/YYYY-MM-DD.html."""
+    HISTORY_DIR.mkdir(exist_ok=True)
+    (HISTORY_DIR / f"{day_start.strftime('%Y-%m-%d')}.html").write_text(
+        text, encoding="utf-8")
+
+
+def build_history_block(previous: list[tuple]) -> str:
+    """Формирует вставку в промпт с прошлыми выпусками (или пустую строку)."""
+    if not previous:
+        return ""
+    parts = [f"— Выпуск за {d.strftime('%d.%m.%Y')}:\n{text}"
+             for d, text in previous]
+    joined = "\n\n".join(parts)
+    return (
+        "\nВАЖНО — не повторяйся с прошлыми выпусками. Ниже уже опубликованные "
+        "дайджесты за предыдущие дни. Не включай новости, которые в них уже "
+        "освещены: пропускай те же события и их продолжения без существенного "
+        "развития. Старую тему бери только при значимо новой информации и "
+        "подавай явно как обновление.\n\n"
+        "=== РАНЕЕ ОПУБЛИКОВАНО ===\n"
+        f"{joined}\n"
+        "=== КОНЕЦ ПРОШЛЫХ ВЫПУСКОВ ===\n"
+    )
+
+
 # ------------------------------------------------------------- саммаризация
 
 
 PROMPT_TEMPLATE = """Ты — редактор ежедневного дайджеста новостей об ИИ для Telegram-канала.
 Ниже JSON-массив постов из отраслевых каналов за {date_human}.
-
+{history_block}
 Твоя задача — вернуть ГОТОВЫЙ ТЕКСТ дайджеста и ничего больше (без преамбул, без markdown-заборов):
 
 1. Дедуплицируй: одну и ту же новость часто постят несколько каналов — объедини в один пункт, ссылки на все источники перечисли в конце пункта.
@@ -116,12 +165,14 @@ PROMPT_TEMPLATE = """Ты — редактор ежедневного дайдж
 """
 
 
-def summarize_with_claude(posts: list[dict], date_human: str) -> str:
+def summarize_with_claude(posts: list[dict], date_human: str,
+                          previous: list[tuple] | None = None) -> str:
     """Вызывает Claude Code в headless-режиме (claude -p) по подписке."""
     prompt = PROMPT_TEMPLATE.format(
         date_human=date_human,
         n_posts=len(posts),
         n_channels=len({p["channel"] for p in posts}),
+        history_block=build_history_block(previous or []),
         posts_json=json.dumps(posts, ensure_ascii=False, indent=1),
     )
 
@@ -226,8 +277,13 @@ def main() -> None:
         print("[info] постов нет — дайджест не публикуется")
         return
 
+    previous = load_recent_digests(day_start.date(), LOOKBACK_DAYS)
+    if previous:
+        days = ", ".join(d.strftime("%d.%m") for d, _ in previous)
+        print(f"[info] учитываю прошлые выпуски для дедупликации: {days}")
+
     print("[info] суммаризирую через claude -p…")
-    digest = summarize_with_claude(posts, date_human)
+    digest = summarize_with_claude(posts, date_human, previous)
 
     if args.dry_run:
         print("\n" + "=" * 60 + "\n" + digest)
@@ -235,6 +291,7 @@ def main() -> None:
 
     print("[info] публикую в канал…")
     post_to_channel(digest)
+    save_digest(day_start, digest)
     print("[info] готово ✅")
 
 
