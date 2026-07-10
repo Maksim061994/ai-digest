@@ -165,17 +165,8 @@ PROMPT_TEMPLATE = """Ты — редактор ежедневного дайдж
 """
 
 
-def summarize_with_claude(posts: list[dict], date_human: str,
-                          previous: list[tuple] | None = None) -> str:
-    """Вызывает Claude Code в headless-режиме (claude -p) по подписке."""
-    prompt = PROMPT_TEMPLATE.format(
-        date_human=date_human,
-        n_posts=len(posts),
-        n_channels=len({p["channel"] for p in posts}),
-        history_block=build_history_block(previous or []),
-        posts_json=json.dumps(posts, ensure_ascii=False, indent=1),
-    )
-
+def _run_claude(prompt: str) -> str:
+    """Гоняет промпт через claude -p (headless, по подписке) и чистит ответ."""
     env = os.environ.copy()
     # КРИТИЧНО: если задан ANTHROPIC_API_KEY, claude -p начнёт списывать деньги
     # с API-аккаунта вместо подписки Max. Убираем принудительно.
@@ -203,8 +194,58 @@ def summarize_with_claude(posts: list[dict], date_human: str,
     if not text:
         raise RuntimeError(f"Пустой ответ от Claude: {result.stdout[:500]}")
     # на случай, если модель всё же обернула ответ в ```
-    text = re.sub(r"^```(?:html)?\s*|\s*```$", "", text)
-    return text
+    return re.sub(r"^```(?:html)?\s*|\s*```$", "", text)
+
+
+def summarize_with_claude(posts: list[dict], date_human: str,
+                          previous: list[tuple] | None = None) -> str:
+    """Дневной дайджест: суммаризирует посты за день."""
+    prompt = PROMPT_TEMPLATE.format(
+        date_human=date_human,
+        n_posts=len(posts),
+        n_channels=len({p["channel"] for p in posts}),
+        history_block=build_history_block(previous or []),
+        posts_json=json.dumps(posts, ensure_ascii=False, indent=1),
+    )
+    return _run_claude(prompt)
+
+
+WEEKLY_PROMPT_TEMPLATE = """Ты — редактор еженедельного обзора новостей об ИИ для Telegram-канала.
+Ниже — уже опубликованные ежедневные дайджесты за прошедшую неделю ({week_human}).
+На их основе собери ОБЗОР КЛЮЧЕВЫХ НОВОСТЕЙ НЕДЕЛИ.
+
+Верни ГОТОВЫЙ ТЕКСТ и ничего больше (без преамбул, без markdown-заборов):
+
+1. Отбери только по-настоящему значимое за неделю — не пересказывай всё подряд (ориентир: 8–15 пунктов).
+2. Объединяй связанные события недели в один пункт, показывай развитие сюжета за неделю.
+3. Сгруппируй по темам: 🚀 Релизы моделей и продуктов, 🔬 Исследования, 💼 Бизнес и индустрия, ⚖️ Регулирование, 🛠 Инструменты и open source. Используй только наполненные группы.
+4. По каждому пункту: жирный мини-заголовок, 1–2 предложения сути, ссылки-источники (бери их из дайджестов).
+5. Пиши по-русски, сжато. Не выдумывай фактов, которых нет в дайджестах.
+
+Формат — HTML для Telegram (только теги <b>, <i>, <a href="...">):
+
+<b>📅 Итоги недели в ИИ ({week_human})</b>
+
+<b>🚀 Релизы моделей и продуктов</b>
+
+<b>Название.</b> Суть в 1–2 предложениях. <a href="ССЫЛКА">Источник</a>
+
+(и так далее по группам)
+
+В конце строка: <i>Обзор собран из {n_days} ежедневных дайджестов.</i>
+
+Ежедневные дайджесты за неделю:
+{digests}
+"""
+
+
+def summarize_weekly(digests: list[tuple], week_human: str) -> str:
+    """Недельный обзор: суммаризирует ежедневные дайджесты за неделю."""
+    body = "\n\n".join(
+        f"=== Дайджест за {d.strftime('%d.%m.%Y')} ===\n{text}" for d, text in digests)
+    prompt = WEEKLY_PROMPT_TEMPLATE.format(
+        week_human=week_human, n_days=len(digests), digests=body)
+    return _run_claude(prompt)
 
 
 # ---------------------------------------------------------------- публикация
@@ -253,13 +294,8 @@ def post_to_channel(text: str) -> None:
 # --------------------------------------------------------------------- main
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true",
-                        help="не постить, вывести дайджест в stdout")
-    parser.add_argument("--date", help="дата дайджеста YYYY-MM-DD (по умолчанию вчера)")
-    args = parser.parse_args()
-
+def run_daily(args) -> None:
+    """Ежедневный дайджест за день (по умолчанию — за вчера)."""
     if args.date:
         day = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=TIMEZONE)
     else:
@@ -293,6 +329,50 @@ def main() -> None:
     post_to_channel(digest)
     save_digest(day_start, digest)
     print("[info] готово ✅")
+
+
+def run_weekly(args) -> None:
+    """Недельный обзор: ключевые новости из сохранённых дайджестов за неделю."""
+    if args.date:
+        today = datetime.strptime(args.date, "%Y-%m-%d").replace(tzinfo=TIMEZONE)
+    else:
+        today = datetime.now(TIMEZONE)
+
+    # берём до 7 последних дайджестов с датой по сегодняшний день включительно
+    digests = load_recent_digests(today.date() + timedelta(days=1), 7)
+    if not digests:
+        print("[info] нет сохранённых дайджестов за неделю — обзор не формируется")
+        return
+
+    week_human = (f"{digests[0][0].strftime('%d.%m')}–"
+                  f"{digests[-1][0].strftime('%d.%m.%Y')}")
+    print(f"[info] недельный обзор по {len(digests)} дайджестам ({week_human})…")
+    review = summarize_weekly(digests, week_human)
+
+    if args.dry_run:
+        print("\n" + "=" * 60 + "\n" + review)
+        return
+
+    print("[info] публикую недельный обзор…")
+    post_to_channel(review)
+    print("[info] готово ✅")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true",
+                        help="не постить, вывести результат в stdout")
+    parser.add_argument("--date",
+                        help="дата YYYY-MM-DD: для дайджеста — за какой день, "
+                             "для --weekly — конец недели (по умолчанию сегодня/вчера)")
+    parser.add_argument("--weekly", action="store_true",
+                        help="недельный обзор ключевых новостей из сохранённых дайджестов")
+    args = parser.parse_args()
+
+    if args.weekly:
+        run_weekly(args)
+    else:
+        run_daily(args)
 
 
 if __name__ == "__main__":
