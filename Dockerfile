@@ -15,9 +15,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Планировщик — единственное, что зашивается в образ; код (digest.py, channels.txt)
-# и сессия Telethon монтируются volume'ом в docker-compose.yml.
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-CMD ["entrypoint.sh"]
+# Код (digest.py, channels.txt), планировщик (entrypoint.sh) и сессия Telethon
+# монтируются volume'ом (.:/app в docker-compose.yml) — образ остаётся «рантаймом»,
+# а правки скриптов подхватываются без пересборки образа.
+CMD ["sh", "/app/entrypoint.sh"]
