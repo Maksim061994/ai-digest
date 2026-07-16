@@ -19,3 +19,17 @@ services:
       # Код + channels.txt + файл сессии Telethon (digest_session.session) — на хосте, переживают пересборку.
       - .:/app
     # Авторизация Claude — через CLAUDE_CODE_OAUTH_TOKEN из .env (env_file), volume не нужен.
+
+  # Бот управления списком каналов: слушает команды (/add, /remove, /list) и правит
+  # channels.txt, который дайджест читает при следующем запуске. Тот же образ и mount.
+  bot:
+    build: .
+    image: ai-digest
+    container_name: ai-digest-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - .:/app
+    command: python bot.py
