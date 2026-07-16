@@ -1,6 +1,10 @@
 # Секреты и учётные данные — НИКОГДА не коммитить
 .env
 
+# Список каналов — пользовательские данные (правится ботом на сервере).
+# В репозитории только шаблон channels.txt.example.
+channels.txt
+
 # Сессия Telethon = полный доступ к вашему TG-аккаунту
 *.session
 *.session-journal
@@ -23,3 +27,6 @@ paper_preview.*
 venv/
 __pycache__/
 *.pyc
+
+# macOS
+.DS_Store

@@ -7,7 +7,7 @@
 ## Как это работает
 
 ```
-cron (06:00) → digest.py
+cron (08:00) → digest.py
                  ├── Telethon (MTProto, ваш обычный TG-аккаунт) — читает каналы
                  ├── claude -p (Claude Code, авторизация по подписке Max) — саммари
                  └── Bot API (sendMessage) — постит в канал
@@ -48,7 +48,8 @@ claude   # интерактивный вход: выбрать "Claude account w
 2. **Бот (публикация):** создайте бота у @BotFather, получите токен,
    добавьте бота **администратором** в ваш канал-дайджест с правом публикации.
 3. Скопируйте `.env.example` → `.env` и заполните.
-4. Впишите каналы-источники в `channels.txt`.
+4. Скопируйте `channels.txt.example` → `channels.txt` и впишите свои источники
+   (дальше список можно менять командами бота `/add` и `/remove`).
 
 ### 4. Первый запуск
 
@@ -71,15 +72,15 @@ crontab -e
 ```
 
 ```cron
-# каждый день в 06:00 по времени сервера — дневной дайджест
-0 6 * * * cd /home/USER/ai-digest && ./venv/bin/python digest.py >> digest.log 2>&1
+# каждый день в 08:00 по времени сервера — дневной дайджест
+0 8 * * * cd /home/USER/ai-digest && ./venv/bin/python digest.py >> digest.log 2>&1
 # по воскресеньям в 21:00 — недельный обзор ключевых новостей
 0 21 * * 0 cd /home/USER/ai-digest && ./venv/bin/python digest.py --weekly >> digest.log 2>&1
 # каждый день в 13:00 — научный разбор статьи
 0 13 * * * cd /home/USER/ai-digest && ./venv/bin/python paper.py >> digest.log 2>&1
 ```
 
-Если время сервера — UTC, а дайджест нужен в 06:00 МСК, ставьте `0 3 * * *`,
+Если время сервера — UTC, а дайджест нужен в 08:00 МСК, ставьте `0 5 * * *`,
 либо задайте `CRON_TZ=Europe/Moscow` в начале crontab (поддерживается не везде).
 
 Важно для cron: PATH в cron минимальный, поэтому если `claude` не находится —
@@ -140,7 +141,33 @@ python paper.py --id 2401.12345  # принудительно разобрать
 Проверка идёт только по формату username; нечитаемый канал проявится как `0 постов`
 в логах дайджеста. Локально бот запускается так же: `python bot.py`.
 
-## Почему не GitHub Actions
+## Автодеплой на сервер (GitHub Actions)
+
+Workflow `.github/workflows/deploy.yml` при каждом обновлении ветки `main`
+(в том числе при слиянии PR из другой ветки) заходит на сервер по SSH и обновляет
+контейнеры: `git reset --hard origin/main` + `docker-compose up -d --build`.
+
+Что нужно один раз настроить:
+
+1. На сервере уже должен лежать развёрнутый проект (`git clone`, заполненные `.env`
+   и `channels.txt`, рабочие сессия Telethon и OAuth-токен). Деплой только обновляет код.
+2. Создайте SSH-ключ для деплоя и положите публичную часть на сервер:
+   ```bash
+   ssh-keygen -t ed25519 -f deploy_key -N ""     # на своей машине
+   ssh-copy-id -i deploy_key.pub USER@SERVER      # или вручную в ~/.ssh/authorized_keys
+   ```
+3. В GitHub: **Settings → Secrets and variables → Actions → New repository secret** — добавьте:
+   - `DEPLOY_HOST` — IP или домен сервера;
+   - `DEPLOY_USER` — пользователь SSH (например `root`);
+   - `DEPLOY_PATH` — путь к проекту на сервере (например `/root/ai-digest-project/ai-digest`);
+   - `DEPLOY_SSH_KEY` — приватный ключ целиком (содержимое файла `deploy_key`);
+   - `DEPLOY_PORT` — порт SSH, если не 22 (необязательно).
+
+После этого любой merge в `main` автоматически выкатывается на сервер. Деплой можно
+запустить и вручную: вкладка **Actions → Deploy to server → Run workflow**.
+`channels.txt` из гита выведен (его правит бот), поэтому деплой его не затирает.
+
+## Почему не гонять сам дайджест в GitHub Actions
 
 Технически можно (через `claude setup-token` и секреты), но сессия Telethon и
 OAuth-токен подписки — чувствительные данные, которые в Actions придётся хранить

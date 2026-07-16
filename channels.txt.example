@@ -1,17 +1,10 @@
 # По одному username открытого канала на строку, @ необязателен.
 # Строки с # игнорируются. Замените на свои источники.
+#
+# Это шаблон. При первом развёртывании: cp channels.txt.example channels.txt
+# Дальше список можно править вручную или командами бота (/add, /remove).
 ai_newz
 seeallochnaya
 gonzo_ML
 denissexy
 opendatascience
-boris_again
-addmeto
-ai_machinelearning_big_data
-nn_for_science
-dl_stories
-MLunderhood
-bci_ru
-singularityfm
-PHYGITAL3DML
-rybolos_channel
