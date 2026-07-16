@@ -15,6 +15,10 @@ history/
 # Временный файл атомарной записи списка каналов ботом
 channels.tmp
 
+# Разобранные статьи (дедуп научных постов) и превью иллюстраций из --dry-run
+paper_history.txt
+paper_preview.*
+
 # Python
 venv/
 __pycache__/

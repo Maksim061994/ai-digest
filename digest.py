@@ -165,7 +165,7 @@ PROMPT_TEMPLATE = """Ты — редактор ежедневного дайдж
 """
 
 
-def _run_claude(prompt: str) -> str:
+def _run_claude(prompt: str, model: str | None = None) -> str:
     """Гоняет промпт через claude -p (headless, по подписке) и чистит ответ."""
     env = os.environ.copy()
     # КРИТИЧНО: если задан ANTHROPIC_API_KEY, claude -p начнёт списывать деньги
@@ -175,7 +175,7 @@ def _run_claude(prompt: str) -> str:
     result = subprocess.run(
         [
             "claude", "-p",
-            "--model", CLAUDE_MODEL,
+            "--model", model or CLAUDE_MODEL,
             "--output-format", "json",
             "--max-turns", "1",          # чистая генерация, инструменты не нужны
             "--disallowedTools", "Bash,Edit,Write,Read,WebSearch,WebFetch",
