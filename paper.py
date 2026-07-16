@@ -89,8 +89,8 @@ def choose_paper(candidates: dict) -> str:
 
 def fetch_metadata(arxiv_id: str) -> dict:
     """Название, авторы, аннотация с arXiv API."""
-    r = httpx.get("http://export.arxiv.org/api/query",
-                  params={"id_list": arxiv_id}, timeout=30)
+    r = httpx.get("https://export.arxiv.org/api/query",
+                  params={"id_list": arxiv_id}, timeout=30, follow_redirects=True)
     r.raise_for_status()
     ns = {"a": "http://www.w3.org/2005/Atom"}
     entry = ET.fromstring(r.text).find("a:entry", ns)
