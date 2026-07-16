@@ -37,5 +37,12 @@ jobs:
             [ -f channels.txt ] || cp channels.txt.bak channels.txt 2>/dev/null || true
             [ -f channels.txt ] || cp channels.txt.example channels.txt
 
-            docker-compose up -d --build
+            # Docker Compose v2 (docker compose) — v1 (docker-compose) несовместим
+            # с новым форматом образов (KeyError: 'ContainerConfig').
+            if docker compose version >/dev/null 2>&1; then
+              DC="docker compose"
+            else
+              DC="docker-compose"
+            fi
+            $DC up -d --build
             docker image prune -f
