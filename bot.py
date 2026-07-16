@@ -28,21 +28,37 @@ load_dotenv(BASE_DIR / ".env")
 
 BOT_TOKEN = os.environ["TG_BOT_TOKEN"]
 CHANNELS_FILE = BASE_DIR / "channels.txt"
+SCHEDULE_FILE = BASE_DIR / "schedule.conf"
 ADMINS = {int(x) for x in re.findall(r"\d+", os.environ.get("BOT_ADMINS", ""))}
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # Публичный username Telegram: буквы/цифры/подчёркивание, 4–32 символа.
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
+# Время HH:MM (00:00–23:59), допускаем без ведущего нуля в часах.
+TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+# Значения по умолчанию должны совпадать с entrypoint.sh.
+SCHEDULE_DEFAULTS = {"RUN_AT": "08:00", "PAPER_AT": "13:00",
+                     "WEEKLY_AT": "21:00", "WEEKLY_DOW": "7"}
+SCHEDULE_ORDER = ("RUN_AT", "PAPER_AT", "WEEKLY_AT", "WEEKLY_DOW")
+JOB_KEYS = {"digest": "RUN_AT", "paper": "PAPER_AT", "weekly": "WEEKLY_AT"}
+WEEKDAYS = {"1": "Пн", "2": "Вт", "3": "Ср", "4": "Чт", "5": "Пт", "6": "Сб", "7": "Вс"}
 
 HELP = (
-    "Я управляю списком каналов-источников для ИИ-дайджеста.\n\n"
-    "Команды:\n"
+    "Я управляю ИИ-дайджестом: список каналов и расписание публикаций.\n\n"
+    "Каналы:\n"
     "/list — показать текущие каналы\n"
     "/add @channel [ещё @channel/ссылки] — добавить\n"
-    "/remove @channel [...] — удалить\n"
+    "/remove @channel [...] — удалить\n\n"
+    "Расписание (время по таймзоне сервера):\n"
+    "/times — показать текущее расписание\n"
+    "/set digest HH:MM — время ежедневного дайджеста\n"
+    "/set paper HH:MM — время научного разбора\n"
+    "/set weekly HH:MM — время недельного обзора\n"
+    "/set weekday N — день недельного обзора (1=Пн … 7=Вс)\n\n"
     "/help — эта справка\n\n"
-    "Принимаю @username, username и ссылки вида https://t.me/username.\n"
-    "Изменения применяются при следующем запуске дайджеста."
+    "Каналы принимаю как @username, username или ссылку https://t.me/username.\n"
+    "Правки каналов применяются при следующем запуске дайджеста, времени — в течение минуты."
 )
 
 
@@ -110,6 +126,61 @@ def remove_channels(tokens):
     return removed
 
 
+# ------------------------------------------------------------ расписание
+
+
+def read_schedule() -> dict:
+    conf = dict(SCHEDULE_DEFAULTS)
+    if SCHEDULE_FILE.exists():
+        for line in SCHEDULE_FILE.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() in conf:
+                    conf[k.strip()] = v.strip()
+    return conf
+
+
+def write_schedule(conf: dict) -> None:
+    body = "".join(f"{k}={conf[k]}\n" for k in SCHEDULE_ORDER)
+    tmp = SCHEDULE_FILE.with_suffix(".tmp")
+    tmp.write_text(body, encoding="utf-8")
+    tmp.replace(SCHEDULE_FILE)
+
+
+def normalize_time(s: str):
+    if not TIME_RE.match(s):
+        return None
+    h, m = s.split(":")
+    return f"{int(h):02d}:{int(m):02d}"
+
+
+def handle_set(chat_id, args):
+    if len(args) != 2:
+        send(chat_id, "Использование: /set digest|paper|weekly HH:MM  или  /set weekday 1-7")
+        return
+    what, value = args[0].lower(), args[1]
+    conf = read_schedule()
+    if what in JOB_KEYS:
+        t = normalize_time(value)
+        if not t:
+            send(chat_id, "Время в формате HH:MM, например 08:30.")
+            return
+        conf[JOB_KEYS[what]] = t
+        write_schedule(conf)
+        send(chat_id, f"Готово. Время «{what}» теперь {t}. Применится в течение минуты.")
+    elif what in ("weekday", "dow"):
+        if value not in WEEKDAYS:
+            send(chat_id, "День недели числом 1–7 (1=Пн … 7=Вс).")
+            return
+        conf["WEEKLY_DOW"] = value
+        write_schedule(conf)
+        send(chat_id, f"Готово. Недельный обзор теперь по {WEEKDAYS[value]}. "
+                      f"Применится в течение минуты.")
+    else:
+        send(chat_id, "Не понял, что менять. /set digest|paper|weekly HH:MM  или  /set weekday N")
+
+
 # -------------------------------------------------------------- Telegram I/O
 
 
@@ -174,6 +245,17 @@ def handle(msg):
                           f"\nВсего каналов: {len(read_file()[1])}.")
         else:
             send(chat_id, "Ничего не удалено — таких каналов нет в списке. /list")
+    elif cmd == "/times":
+        c = read_schedule()
+        send(chat_id,
+             "Расписание (время по таймзоне сервера):\n"
+             f"Дайджест: {c['RUN_AT']}\n"
+             f"Разбор статьи: {c['PAPER_AT']}\n"
+             f"Недельный обзор: {c['WEEKLY_AT']}, день {c['WEEKLY_DOW']} "
+             f"({WEEKDAYS.get(c['WEEKLY_DOW'], '?')})\n\n"
+             "Изменить: /set digest|paper|weekly HH:MM  или  /set weekday 1-7")
+    elif cmd == "/set":
+        handle_set(chat_id, args)
     else:
         send(chat_id, "Неизвестная команда. /help")
 

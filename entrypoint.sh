@@ -1,46 +1,41 @@
 #!/bin/sh
 # Планировщик контейнера: ежедневный дайджест, ежедневный научный разбор и
-# недельный обзор по расписанию.
+# недельный обзор.
+#
+# Времена берутся из /app/schedule.conf и перечитываются каждую минуту, поэтому
+# бот может менять расписание на лету (команды /times, /set). При первом запуске
+# schedule.conf создаётся из переменных окружения (RUN_AT/PAPER_AT/WEEKLY_AT/
+# WEEKLY_DOW из docker-compose.yml). Дальше источник истины — этот файл.
 #
 # Все запуски — обычные дочерние процессы с ПОЛНЫМ окружением контейнера, поэтому
-# скриптам доступны CLAUDE_CODE_OAUTH_TOKEN и TG_* (системный cron, в отличие от
-# этого, переменные окружения не пробрасывает).
-#
+# скриптам доступны CLAUDE_CODE_OAUTH_TOKEN и TG_* (в отличие от системного cron).
 # Время трактуется по таймзоне контейнера (переменная TZ в docker-compose.yml).
-#   RUN_AT     — ежедневный дайджест (HH:MM), по умолчанию 08:00
-#   PAPER_AT   — ежедневный научный разбор статьи (HH:MM), по умолчанию 13:00
-#   WEEKLY_AT  — недельный обзор (HH:MM), по умолчанию 21:00
-#   WEEKLY_DOW — день недели обзора по `date +%u`: 1=Пн … 7=Вс, по умолчанию 7
 set -u
 
-DAILY_AT="${RUN_AT:-08:00}"
-PAPER_AT="${PAPER_AT:-13:00}"
-WEEKLY_AT="${WEEKLY_AT:-21:00}"
-WEEKLY_DOW="${WEEKLY_DOW:-7}"
+CONF="/app/schedule.conf"
 
-# Чистое завершение по сигналу от Docker (иначе shell досыпает sleep и получает SIGKILL/137).
+DEF_RUN_AT="${RUN_AT:-08:00}"
+DEF_PAPER_AT="${PAPER_AT:-13:00}"
+DEF_WEEKLY_AT="${WEEKLY_AT:-21:00}"
+DEF_WEEKLY_DOW="${WEEKLY_DOW:-7}"
+
+# Первичное создание конфига из окружения.
+if [ ! -f "$CONF" ]; then
+  {
+    echo "RUN_AT=$DEF_RUN_AT"
+    echo "PAPER_AT=$DEF_PAPER_AT"
+    echo "WEEKLY_AT=$DEF_WEEKLY_AT"
+    echo "WEEKLY_DOW=$DEF_WEEKLY_DOW"
+  } > "$CONF"
+fi
+
+# Чистое завершение по сигналу от Docker (иначе shell досыпает sleep -> SIGKILL/137).
 trap 'echo "[scheduler] остановка по сигналу"; exit 0' TERM INT
 
-echo "[scheduler] старт (TZ=$(date +%Z)). Дайджест в ${DAILY_AT}; разбор статьи в ${PAPER_AT}; недельный обзор в ${WEEKLY_AT} (день недели ${WEEKLY_DOW})."
-
-# Ближайший будущий момент HH:MM (epoch). $1 = время, $2 = now.
-next_at() {
-  t=$(date -d "today $1" +%s)
-  [ "$t" -le "$2" ] && t=$(date -d "tomorrow $1" +%s)
-  echo "$t"
-}
-
-# Ближайший будущий WEEKLY_AT в день недели WEEKLY_DOW (epoch). $1 = now.
-next_weekly() {
-  i=0
-  while [ "$i" -le 7 ]; do
-    day=$(date -d "+${i} day" +%Y-%m-%d)
-    cand=$(date -d "${day} ${WEEKLY_AT}" +%s)
-    if [ "$cand" -gt "$1" ] && [ "$(date -d "@${cand}" +%u)" = "${WEEKLY_DOW}" ]; then
-      echo "$cand"; return
-    fi
-    i=$((i + 1))
-  done
+# Безопасное чтение значения из конфига (без source, чтобы не исполнять содержимое).
+conf_get() {
+  v=$(grep -E "^$1=" "$CONF" 2>/dev/null | tail -n1 | cut -d= -f2 | tr -d ' \r')
+  [ -n "$v" ] && echo "$v" || echo "$2"
 }
 
 run_job() {
@@ -53,30 +48,32 @@ run_job() {
   fi
 }
 
-# Наименьшее из непустых значений
-min() {
-  m=""
-  for v in "$@"; do
-    [ -z "$v" ] && continue
-    { [ -z "$m" ] || [ "$v" -lt "$m" ]; } && m="$v"
-  done
-  echo "$m"
-}
+echo "[scheduler] старт (TZ=$(date +%Z)). Расписание из ${CONF}; изменения применяются в течение минуты."
+
+last_digest=""; last_paper=""; last_weekly=""
 
 while true; do
-  now=$(date +%s)
-  nd=$(next_at "$DAILY_AT" "$now")
-  np=$(next_at "$PAPER_AT" "$now")
-  nw=$(next_weekly "$now")
+  run_at=$(conf_get RUN_AT "$DEF_RUN_AT")
+  paper_at=$(conf_get PAPER_AT "$DEF_PAPER_AT")
+  weekly_at=$(conf_get WEEKLY_AT "$DEF_WEEKLY_AT")
+  weekly_dow=$(conf_get WEEKLY_DOW "$DEF_WEEKLY_DOW")
 
-  target=$(min "$nd" "$np" "$nw")
-  echo "[scheduler] следующее событие: $(date -d "@${target}") (через $((target - now))s)"
-  # sleep в фоне + wait: так trap срабатывает сразу по сигналу, а не после досыпания.
-  sleep "$((target - now))" &
+  today=$(date +%Y-%m-%d)
+  hm=$(date +%H:%M)
+  dow=$(date +%u)
+
+  # last_* хранит дату последнего запуска задачи — защита от повторов в ту же минуту/день.
+  if [ "$hm" = "$run_at" ] && [ "$last_digest" != "$today" ]; then
+    last_digest="$today"; run_job "ежедневный дайджест" digest.py
+  fi
+  if [ "$hm" = "$paper_at" ] && [ "$last_paper" != "$today" ]; then
+    last_paper="$today"; run_job "научный разбор статьи" paper.py
+  fi
+  if [ "$hm" = "$weekly_at" ] && [ "$dow" = "$weekly_dow" ] && [ "$last_weekly" != "$today" ]; then
+    last_weekly="$today"; run_job "недельный обзор" digest.py --weekly
+  fi
+
+  # sleep в фоне + wait: trap срабатывает сразу по сигналу, а не после досыпания.
+  sleep 30 &
   wait "$!"
-
-  now=$(date +%s)
-  [ "$now" -ge "$nd" ] && run_job "ежедневный дайджест" digest.py
-  [ "$now" -ge "$np" ] && run_job "научный разбор статьи" paper.py
-  [ -n "$nw" ] && [ "$now" -ge "$nw" ] && run_job "недельный обзор" digest.py --weekly
 done

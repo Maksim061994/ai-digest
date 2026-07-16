@@ -19,6 +19,10 @@ history/
 # Временный файл атомарной записи списка каналов ботом
 channels.tmp
 
+# Расписание публикаций (runtime-состояние, правится ботом) и его temp-файл
+schedule.conf
+schedule.tmp
+
 # Разобранные статьи (дедуп научных постов) и превью иллюстраций из --dry-run
 paper_history.txt
 paper_preview.*
