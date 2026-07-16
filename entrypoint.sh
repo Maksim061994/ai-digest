@@ -18,6 +18,9 @@ PAPER_AT="${PAPER_AT:-13:00}"
 WEEKLY_AT="${WEEKLY_AT:-21:00}"
 WEEKLY_DOW="${WEEKLY_DOW:-7}"
 
+# Чистое завершение по сигналу от Docker (иначе shell досыпает sleep и получает SIGKILL/137).
+trap 'echo "[scheduler] остановка по сигналу"; exit 0' TERM INT
+
 echo "[scheduler] старт (TZ=$(date +%Z)). Дайджест в ${DAILY_AT}; разбор статьи в ${PAPER_AT}; недельный обзор в ${WEEKLY_AT} (день недели ${WEEKLY_DOW})."
 
 # Ближайший будущий момент HH:MM (epoch). $1 = время, $2 = now.
@@ -68,7 +71,9 @@ while true; do
 
   target=$(min "$nd" "$np" "$nw")
   echo "[scheduler] следующее событие: $(date -d "@${target}") (через $((target - now))s)"
-  sleep "$((target - now))"
+  # sleep в фоне + wait: так trap срабатывает сразу по сигналу, а не после досыпания.
+  sleep "$((target - now))" &
+  wait "$!"
 
   now=$(date +%s)
   [ "$now" -ge "$nd" ] && run_job "ежедневный дайджест" digest.py
