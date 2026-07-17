@@ -7,10 +7,11 @@ on:
     branches: [main]
   workflow_dispatch: {}     # позволяет запустить деплой вручную из вкладки Actions
 
-# Не запускать два деплоя одновременно.
+# Только один актуальный деплой: новый push отменяет ещё не доехавший старый,
+# чтобы устаревшие прогоны (напр. с долгой пересборкой) не копились в очереди.
 concurrency:
   group: deploy-main
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
@@ -57,7 +58,9 @@ jobs:
             fi
 
             $DC up -d $BUILD
-            # restart перечитывает bind-mount для долгоживущих процессов (bot.py, entrypoint.sh);
-            # digest.py/paper.py и так запускаются заново по расписанию.
-            $DC restart
+            # restart перечитывает bind-mount для долгоживущих процессов (bot.py, entrypoint.sh),
+            # но только если приехали новые коммиты — иначе не трогаем работающие контейнеры.
+            if [ "$BEFORE" != "$AFTER" ]; then
+              $DC restart
+            fi
             docker image prune -f
