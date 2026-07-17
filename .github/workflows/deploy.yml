@@ -23,6 +23,7 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || '22' }}
+          command_timeout: 20m     # хватит на редкую пересборку образа (npm claude-code)
           script: |
             set -e
             cd "${{ secrets.DEPLOY_PATH }}"
@@ -30,8 +31,10 @@ jobs:
             # channels.txt не в гите (его правит бот) — подстрахуемся бэкапом на случай reset.
             cp channels.txt channels.txt.bak 2>/dev/null || true
 
+            BEFORE=$(git rev-parse HEAD)
             git fetch --prune origin main
             git reset --hard origin/main
+            AFTER=$(git rev-parse HEAD)
 
             # Если channels.txt отсутствует (первый деплой после вывода из гита) — восстановим.
             [ -f channels.txt ] || cp channels.txt.bak channels.txt 2>/dev/null || true
@@ -44,5 +47,17 @@ jobs:
             else
               DC="docker-compose"
             fi
-            $DC up -d --build
+
+            # Пересобираем образ ТОЛЬКО если менялись Dockerfile/requirements.txt —
+            # остальной код (digest.py, paper.py, bot.py, entrypoint.sh) в bind-mount.
+            BUILD=""
+            if git diff --name-only "$BEFORE" "$AFTER" | grep -qE '^(Dockerfile|requirements\.txt)$'; then
+              echo "Dockerfile/requirements изменились — пересобираю образ"
+              BUILD="--build"
+            fi
+
+            $DC up -d $BUILD
+            # restart перечитывает bind-mount для долгоживущих процессов (bot.py, entrypoint.sh);
+            # digest.py/paper.py и так запускаются заново по расписанию.
+            $DC restart
             docker image prune -f
