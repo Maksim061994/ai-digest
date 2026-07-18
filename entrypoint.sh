@@ -24,8 +24,13 @@ DEF_WEEKLY_DOW="${WEEKLY_DOW:-7}"
 VIBE_START="${VIBE_WINDOW_START:-18:00}"
 VIBE_END="${VIBE_WINDOW_END:-20:00}"
 
-# HH:MM -> минуты с полуночи (10# — чтобы 08/09 не считались восьмеричными).
-to_min() { echo $((10#${1%%:*} * 60 + 10#${1##*:})); }
+# HH:MM -> минуты с полуночи. Срезаем ведущий ноль (POSIX sh/dash считает 08/09
+# восьмеричными и падает), пустое значение трактуем как 0.
+to_min() {
+  _h=${1%%:*}; _m=${1##*:}
+  _h=${_h#0}; _m=${_m#0}
+  echo $(( ${_h:-0} * 60 + ${_m:-0} ))
+}
 VIBE_START_MIN=$(to_min "$VIBE_START")
 VIBE_END_MIN=$(to_min "$VIBE_END")
 
@@ -72,7 +77,7 @@ while true; do
   today=$(date +%Y-%m-%d)
   hm=$(date +%H:%M)
   dow=$(date +%u)
-  now_min=$((10#$(date +%H) * 60 + 10#$(date +%M)))
+  now_min=$(to_min "$(date +%H:%M)")
 
   # last_* хранит дату последнего запуска — защита от повторов в ту же минуту/день.
   if [ "$hm" = "$run_at" ] && [ "$last_digest" != "$today" ]; then
