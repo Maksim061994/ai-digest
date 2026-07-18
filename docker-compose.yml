@@ -15,6 +15,10 @@ services:
       # Недельный обзор ключевых новостей: время (HH:MM) и день недели (1=Пн … 7=Вс).
       WEEKLY_AT: "21:00"
       WEEKLY_DOW: "7"
+      # «Живой» вечерний пост (vibe.py): случайная минута в окне, раз в N дней.
+      VIBE_WINDOW_START: "18:00"
+      VIBE_WINDOW_END: "20:00"
+      VIBE_EVERY_DAYS: "2"
       # Страховка: гарантированно пустой ключ, чтобы claude -p шёл в подписку, а не в платный API.
       ANTHROPIC_API_KEY: ""
     volumes:

@@ -27,6 +27,10 @@ schedule.tmp
 paper_history.txt
 paper_preview.*
 
+# Состояние «живых» постов: дата последнего и показанные репозитории
+vibe_last.txt
+vibe_repos.txt
+
 # Python
 venv/
 __pycache__/

@@ -275,14 +275,14 @@ def split_for_telegram(text: str, limit: int = TG_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
-def post_to_channel(text: str) -> None:
+def post_to_channel(text: str, disable_preview: bool = True) -> None:
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     for chunk in split_for_telegram(text):
         r = httpx.post(url, json={
             "chat_id": TARGET_CHANNEL,
             "text": chunk,
             "parse_mode": "HTML",
-            "disable_web_page_preview": True,
+            "disable_web_page_preview": disable_preview,
         }, timeout=30)
         data = r.json()
         if not data.get("ok"):
@@ -293,7 +293,7 @@ def post_to_channel(text: str) -> None:
             r2 = httpx.post(url, json={
                 "chat_id": TARGET_CHANNEL,
                 "text": plain,
-                "disable_web_page_preview": True,
+                "disable_web_page_preview": disable_preview,
             }, timeout=30)
             r2.raise_for_status()
 
