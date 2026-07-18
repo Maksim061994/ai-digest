@@ -29,6 +29,7 @@ load_dotenv(BASE_DIR / ".env")
 BOT_TOKEN = os.environ["TG_BOT_TOKEN"]
 CHANNELS_FILE = BASE_DIR / "channels.txt"
 SCHEDULE_FILE = BASE_DIR / "schedule.conf"
+TRENDS_FILE = BASE_DIR / "trends_report.md"
 ADMINS = {int(x) for x in re.findall(r"\d+", os.environ.get("BOT_ADMINS", ""))}
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
@@ -56,6 +57,8 @@ HELP = (
     "/set paper HH:MM — время научного разбора\n"
     "/set weekly HH:MM — время недельного обзора\n"
     "/set weekday N — день недельного обзора (1=Пн … 7=Вс)\n\n"
+    "Отчёты:\n"
+    "/trends — прислать отчёт о ключевых трендах ИИ за 3 месяца\n\n"
     "/help — эта справка\n\n"
     "Каналы принимаю как @username, username или ссылку https://t.me/username.\n"
     "Правки каналов применяются при следующем запуске дайджеста, времени — в течение минуты."
@@ -194,6 +197,19 @@ def send(chat_id, text):
         print(f"[bot] sendMessage error: {e}", file=sys.stderr)
 
 
+def send_document(chat_id, path, caption=""):
+    try:
+        with open(path, "rb") as f:
+            r = httpx.post(f"{API}/sendDocument",
+                           data={"chat_id": chat_id, "caption": caption},
+                           files={"document": (path.name, f)}, timeout=90)
+        if not r.json().get("ok"):
+            send(chat_id, f"Не удалось отправить файл: {r.text[:200]}")
+    except Exception as e:
+        print(f"[bot] sendDocument error: {e}", file=sys.stderr)
+        send(chat_id, "Ошибка при отправке файла.")
+
+
 def handle(msg):
     chat_id = msg["chat"]["id"]
     uid = msg.get("from", {}).get("id")
@@ -256,6 +272,12 @@ def handle(msg):
              "Изменить: /set digest|paper|weekly HH:MM  или  /set weekday 1-7")
     elif cmd == "/set":
         handle_set(chat_id, args)
+    elif cmd == "/trends":
+        if TRENDS_FILE.exists():
+            send_document(chat_id, TRENDS_FILE, caption="Ключевые тренды в ИИ за 3 месяца")
+        else:
+            send(chat_id, "Отчёт ещё не сформирован. Сгенерируйте его на сервере: "
+                          "python trends.py")
     else:
         send(chat_id, "Неизвестная команда. /help")
 

@@ -54,7 +54,8 @@ LOOKBACK_DAYS = int(os.environ.get("DEDUP_LOOKBACK_DAYS", "2"))
 # ---------------------------------------------------------------- сбор постов
 
 
-async def collect_posts(day_start: datetime, day_end: datetime) -> list[dict]:
+async def collect_posts(day_start: datetime, day_end: datetime,
+                        limit: int = 300) -> list[dict]:
     """Собирает посты из всех каналов за интервал [day_start, day_end)."""
     posts = []
     async with TelegramClient(SESSION_FILE, API_ID, API_HASH) as client:
@@ -67,7 +68,7 @@ async def collect_posts(day_start: datetime, day_end: datetime) -> list[dict]:
 
             count = 0
             # iter_messages идёт от новых к старым; offset_date=day_end отсекает сегодняшние
-            async for msg in client.iter_messages(entity, offset_date=day_end, limit=300):
+            async for msg in client.iter_messages(entity, offset_date=day_end, limit=limit):
                 msg_dt = msg.date.astimezone(TIMEZONE)
                 if msg_dt < day_start:
                     break
