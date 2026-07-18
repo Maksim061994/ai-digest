@@ -16,7 +16,9 @@ BOT_ADMINS в .env — id пользователей через запятую. 
 """
 import os
 import re
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -58,7 +60,8 @@ HELP = (
     "/set weekly HH:MM — время недельного обзора\n"
     "/set weekday N — день недельного обзора (1=Пн … 7=Вс)\n\n"
     "Отчёты:\n"
-    "/trends — прислать отчёт о ключевых трендах ИИ за 3 месяца\n\n"
+    "/trends — прислать последний отчёт о трендах ИИ за 3 месяца\n"
+    "/trends new — собрать отчёт заново (несколько минут) и прислать\n\n"
     "/help — эта справка\n\n"
     "Каналы принимаю как @username, username или ссылку https://t.me/username.\n"
     "Правки каналов применяются при следующем запуске дайджеста, времени — в течение минуты."
@@ -210,6 +213,40 @@ def send_document(chat_id, path, caption=""):
         send(chat_id, "Ошибка при отправке файла.")
 
 
+# Сбор трендов долгий (Telethon + много вызовов opus) — гоняем в фоне, чтобы не
+# блокировать цикл бота. Lock не даёт запустить два сбора одновременно.
+_trends_lock = threading.Lock()
+
+
+def build_trends_async(chat_id):
+    if not _trends_lock.acquire(blocking=False):
+        send(chat_id, "Я уже собираю отчёт о трендах — пришлю, как будет готов.")
+        return
+    send(chat_id, "Собираю тренды за 3 месяца (opus, map-reduce). Это несколько минут — "
+                  "пришлю файл, как только будет готово.")
+
+    def worker():
+        try:
+            r = subprocess.run(["python", str(BASE_DIR / "trends.py")],
+                               cwd=str(BASE_DIR), capture_output=True, text=True,
+                               timeout=1800)
+            if r.returncode == 0 and TRENDS_FILE.exists():
+                send_document(chat_id, TRENDS_FILE,
+                              caption="Ключевые тренды в ИИ за 3 месяца")
+            else:
+                tail = (r.stderr or r.stdout or "").strip()[-500:]
+                send(chat_id, f"Не удалось собрать отчёт (код {r.returncode}).\n{tail}")
+        except subprocess.TimeoutExpired:
+            send(chat_id, "Сбор трендов не уложился в 30 минут и был прерван.")
+        except Exception as e:
+            print(f"[bot] trends error: {e}", file=sys.stderr)
+            send(chat_id, f"Ошибка при сборе трендов: {e}")
+        finally:
+            _trends_lock.release()
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 def handle(msg):
     chat_id = msg["chat"]["id"]
     uid = msg.get("from", {}).get("id")
@@ -273,11 +310,12 @@ def handle(msg):
     elif cmd == "/set":
         handle_set(chat_id, args)
     elif cmd == "/trends":
-        if TRENDS_FILE.exists():
+        if args and args[0].lower() in ("new", "refresh", "build", "собрать", "обнови"):
+            build_trends_async(chat_id)
+        elif TRENDS_FILE.exists():
             send_document(chat_id, TRENDS_FILE, caption="Ключевые тренды в ИИ за 3 месяца")
         else:
-            send(chat_id, "Отчёт ещё не сформирован. Сгенерируйте его на сервере: "
-                          "python trends.py")
+            send(chat_id, "Отчёта пока нет. Собрать сейчас: /trends new")
     else:
         send(chat_id, "Неизвестная команда. /help")
 
