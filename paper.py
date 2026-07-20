@@ -39,6 +39,8 @@ PAPER_LOOKBACK_DAYS = int(os.environ.get("PAPER_LOOKBACK_DAYS", "3"))
 PAPER_HISTORY = BASE_DIR / "paper_history.txt"
 PAPER_TEXT_BUDGET = 45000       # сколько символов текста статьи класть в промпт
 CAPTION_LIMIT = 1024            # лимит подписи к фото в Telegram
+# Извлекать иллюстрацию из PDF. На тесных по памяти серверах можно выключить (PAPER_FIGURE=0).
+PAPER_FIGURE = os.environ.get("PAPER_FIGURE", "1") not in ("0", "false", "no", "")
 
 # arXiv id в ссылке (abs/pdf) или в форме "arXiv:2401.12345"
 ARXIV_RE = re.compile(r"(?:arxiv\.org/(?:abs|pdf)/|arxiv:\s*)(\d{4}\.\d{4,5})", re.I)
@@ -117,24 +119,28 @@ def extract_text_and_figure(pdf_bytes: bytes):
     texts, candidates = [], []
     for pno, page in enumerate(doc):
         texts.append(page.get_text())
+        if not PAPER_FIGURE:
+            continue
+        # Только лёгкие метаданные (размер из get_images, без декодирования картинок),
+        # иначе держим в памяти все изображения статьи разом -> OOM.
         for img in page.get_images(full=True):
-            xref = img[0]
-            try:
-                info = doc.extract_image(xref)
-            except Exception:
-                continue
-            ext = info.get("ext", "")
-            w, h = info.get("width", 0), info.get("height", 0)
-            if ext not in ("png", "jpg", "jpeg") or w < 400 or h < 250:
-                continue
-            candidates.append((pno, w * h, info["image"], ext, w, h))
+            xref, w, h = img[0], img[2], img[3]
+            if w >= 400 and h >= 250:
+                candidates.append((pno, w * h, xref))
 
     figure = None
     if candidates:
-        # предпочитаем крупнейшее изображение НЕ с титульной страницы
+        # предпочитаем крупнейшее изображение НЕ с титульной страницы;
+        # байты достаём только у выбранного.
         pool = [c for c in candidates if c[0] > 0] or candidates
-        _, _, data, ext, w, h = max(pool, key=lambda c: c[1])
-        figure = (data, ext, w, h)
+        _, _, xref = max(pool, key=lambda c: c[1])
+        try:
+            info = doc.extract_image(xref)
+            if info.get("ext") in ("png", "jpg", "jpeg"):
+                figure = (info["image"], info["ext"],
+                          info.get("width", 0), info.get("height", 0))
+        except Exception:
+            figure = None
     return "\n".join(texts), figure
 
 
