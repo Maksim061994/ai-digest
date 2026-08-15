@@ -2,13 +2,10 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1
 
-# Node.js (нужен Claude Code) + tzdata (таймзона для планировщика)
+# tzdata — таймзона для планировщика, ca-certificates — TLS для httpx (LLM + Telegram).
+# Node.js больше не нужен: LLM вызывается обычным HTTP-запросом, а не CLI-обёрткой.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates tzdata \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force \
+        ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -6,9 +6,9 @@
   1. Собираем посты каналов за последние PAPER_LOOKBACK_DAYS дней (те же источники,
      что и дайджест) и вытаскиваем из них arXiv-идентификаторы.
   2. Исключаем уже разобранные (paper_history.txt); если кандидатов несколько —
-     Claude выбирает самую значимую статью.
+     модель выбирает самую значимую статью.
   3. Скачиваем PDF с arXiv, извлекаем текст (PyMuPDF) и метаданные (arXiv API).
-  4. Claude пишет строгий, но понятный разбор в стиле д.т.н. (без смайликов, со
+  4. Модель пишет строгий, но понятный разбор в стиле д.т.н. (без смайликов, со
      ссылкой на статью, с пояснением терминов, структурой идея/метод/результат/применение).
   5. Best-effort достаём из PDF ключевую иллюстрацию (крупное растровое изображение)
      и публикуем пост картинкой + текстом. Векторные фигуры не извлекаются — тогда
@@ -27,14 +27,14 @@ from datetime import datetime, timedelta
 
 import httpx
 
-import digest  # переиспользуем сбор постов, вызов claude и публикацию
+import digest  # переиспользуем сбор постов, вызов LLM и публикацию
 
 TIMEZONE = digest.TIMEZONE
 TARGET_CHANNEL = digest.TARGET_CHANNEL
 BOT_TOKEN = digest.BOT_TOKEN
 BASE_DIR = digest.BASE_DIR
 
-PAPER_MODEL = os.environ.get("PAPER_MODEL", os.environ.get("CLAUDE_MODEL", "sonnet"))
+PAPER_MODEL = os.environ.get("PAPER_MODEL", digest.LLM_MODEL)
 PAPER_LOOKBACK_DAYS = int(os.environ.get("PAPER_LOOKBACK_DAYS", "3"))
 PAPER_HISTORY = BASE_DIR / "paper_history.txt"
 PAPER_TEXT_BUDGET = 45000       # сколько символов текста статьи класть в промпт
@@ -81,7 +81,7 @@ def choose_paper(candidates: dict) -> str:
     if len(ids) == 1:
         return ids[0]
     listing = "\n".join(f"- arXiv:{aid} — {candidates[aid]['text'][:400]}" for aid in ids)
-    answer = digest._run_claude(SELECT_PROMPT + listing, PAPER_MODEL)
+    answer = digest._run_llm(SELECT_PROMPT + listing, PAPER_MODEL)
     m = re.search(r"\d{4}\.\d{4,5}", answer)
     return m.group(0) if (m and m.group(0) in candidates) else ids[0]
 
@@ -185,7 +185,7 @@ def write_review(arxiv_id: str, meta: dict, body: str) -> str:
         authors=authors or "—", summary=meta["summary"] or "—",
         body=body[:PAPER_TEXT_BUDGET],
     )
-    return digest._run_claude(prompt, PAPER_MODEL)
+    return digest._run_llm(prompt, PAPER_MODEL)
 
 
 # -------------------------------------------------------------- публикация
@@ -262,7 +262,7 @@ def run(args) -> None:
         print("[warn] не удалось извлечь текст статьи — пропускаю", file=sys.stderr)
         return
 
-    print(f"[info] пишу разбор через claude -p (модель {PAPER_MODEL})…")
+    print(f"[info] пишу разбор через LLM (модель {PAPER_MODEL})…")
     review = write_review(arxiv_id, meta, body)
 
     if args.dry_run:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AI News Digest: собирает вчерашние посты из открытых Telegram-каналов,
-суммаризирует их через Claude Code (headless, по подписке Max) и публикует
+суммаризирует их через Gemini API (OpenAI-совместимый эндпоинт) и публикует
 дайджест в целевой Telegram-канал.
 
 Запуск: python digest.py            — дайджест за вчера
@@ -14,8 +14,8 @@ import asyncio
 import json
 import os
 import re
-import subprocess
 import sys
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -34,8 +34,21 @@ API_HASH = os.environ["TG_API_HASH"]
 BOT_TOKEN = os.environ["TG_BOT_TOKEN"]
 TARGET_CHANNEL = os.environ["TG_TARGET_CHANNEL"]      # @my_digest_channel или -100...
 TIMEZONE = ZoneInfo(os.environ.get("DIGEST_TZ", "Europe/Moscow"))
-CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "sonnet")
 SESSION_FILE = str(BASE_DIR / "digest_session")
+
+# ------------------------------------------------------------------ LLM
+# Провайдер задаётся двумя переменными, поэтому смена движка (Gemini -> DeepSeek,
+# z.ai, OpenRouter) не требует правок кода — все они говорят на одном
+# OpenAI-совместимом /chat/completions.
+LLM_BASE_URL = os.environ.get(
+    "LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai")
+LLM_API_KEY = os.environ["LLM_API_KEY"]
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-3.5-flash")
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "16384"))
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "600"))
+# none|low|medium|high — пусто означает «не передавать параметр» (для провайдеров,
+# которые его не понимают и отвечают 400).
+LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "low").strip()
 
 # Список каналов-источников: по одному username на строку в channels.txt
 CHANNELS = [
@@ -170,40 +183,70 @@ PROMPT_TEMPLATE = """Ты — редактор ежедневного дайдж
 """
 
 
-def _run_claude(prompt: str, model: str | None = None) -> str:
-    """Гоняет промпт через claude -p (headless, по подписке) и чистит ответ."""
-    env = os.environ.copy()
-    # КРИТИЧНО: если задан ANTHROPIC_API_KEY, claude -p начнёт списывать деньги
-    # с API-аккаунта вместо подписки Max. Убираем принудительно.
-    env.pop("ANTHROPIC_API_KEY", None)
-
-    result = subprocess.run(
-        [
-            "claude", "-p",
-            "--model", model or CLAUDE_MODEL,
-            "--output-format", "json",
-            "--max-turns", "1",          # чистая генерация, инструменты не нужны
-            "--disallowedTools", "Bash,Edit,Write,Read,WebSearch,WebFetch",
-        ],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude -p завершился с ошибкой:\n{result.stderr[-2000:]}")
-
-    payload = json.loads(result.stdout)
-    text = payload.get("result", "").strip()
-    if not text:
-        raise RuntimeError(f"Пустой ответ от Claude: {result.stdout[:500]}")
-    # на случай, если модель всё же обернула ответ в ```
-    return re.sub(r"^```(?:html)?\s*|\s*```$", "", text)
+RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504, 529}
 
 
-def summarize_with_claude(posts: list[dict], date_human: str,
-                          previous: list[tuple] | None = None) -> str:
+def _run_llm(prompt: str, model: str | None = None) -> str:
+    """Один запрос к OpenAI-совместимому /chat/completions; чистит и валидирует ответ.
+
+    Ретраи здесь свои: у публичных
+    HTTP-эндпоинтов 429/503 прилетают заметно чаще, а запуск раз в сутки по cron
+    некому перезапустить вручную.
+    """
+    name = (model or LLM_MODEL).removeprefix("models/")
+    payload = {
+        "model": name,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": LLM_MAX_TOKENS,
+        "stream": False,
+    }
+    # Gemini 3.x «думает» перед ответом, и размышления тратят тот же бюджет
+    # max_tokens. Задача чисто редакторская, поэтому глубина размышлений режется
+    # до минимума — иначе дайджест рискует оборваться на середине HTML.
+    if LLM_REASONING_EFFORT:
+        payload["reasoning_effort"] = LLM_REASONING_EFFORT
+
+    last_err = None
+    for attempt in range(4):
+        if attempt:
+            time.sleep(5 * 2 ** (attempt - 1))
+        try:
+            r = httpx.post(
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                json=payload,
+                timeout=LLM_TIMEOUT,
+            )
+        except httpx.RequestError as e:
+            last_err = f"сетевая ошибка: {e!r}"
+            continue
+
+        if r.status_code in RETRYABLE_STATUS:
+            last_err = f"HTTP {r.status_code}: {r.text[:300]}"
+            continue
+        if r.status_code >= 400:
+            # 400/401/403 не лечатся повтором — падаем сразу с телом ответа
+            raise RuntimeError(f"LLM вернул HTTP {r.status_code}:\n{r.text[:2000]}")
+
+        choice = r.json()["choices"][0]
+        # finish_reason=length означает обрыв на полуслове: HTML будет битым,
+        # а Telegram опубликует его как есть. Лучше упасть, чем запостить огрызок.
+        if choice.get("finish_reason") == "length":
+            raise RuntimeError(
+                f"Ответ обрезан по лимиту в {LLM_MAX_TOKENS} токенов — "
+                f"поднимите LLM_MAX_TOKENS")
+        text = (choice["message"].get("content") or "").strip()
+        if not text:
+            last_err = f"пустой ответ (finish_reason={choice.get('finish_reason')})"
+            continue
+        # на случай, если модель всё же обернула ответ в ```
+        return re.sub(r"^```(?:html|markdown)?\s*|\s*```$", "", text).strip()
+
+    raise RuntimeError(f"LLM не ответил после 4 попыток. Последняя ошибка — {last_err}")
+
+
+def summarize_with_llm(posts: list[dict], date_human: str,
+                       previous: list[tuple] | None = None) -> str:
     """Дневной дайджест: суммаризирует посты за день."""
     prompt = PROMPT_TEMPLATE.format(
         date_human=date_human,
@@ -212,7 +255,7 @@ def summarize_with_claude(posts: list[dict], date_human: str,
         history_block=build_history_block(previous or []),
         posts_json=json.dumps(posts, ensure_ascii=False, indent=1),
     )
-    return _run_claude(prompt)
+    return _run_llm(prompt)
 
 
 WEEKLY_PROMPT_TEMPLATE = """Ты — редактор еженедельного обзора новостей об ИИ для Telegram-канала.
@@ -253,7 +296,7 @@ def summarize_weekly(digests: list[tuple], week_human: str) -> str:
         f"=== Дайджест за {d.strftime('%d.%m.%Y')} ===\n{text}" for d, text in digests)
     prompt = WEEKLY_PROMPT_TEMPLATE.format(
         week_human=week_human, n_days=len(digests), digests=body)
-    return _run_claude(prompt)
+    return _run_llm(prompt)
 
 
 # ---------------------------------------------------------------- публикация
@@ -326,8 +369,8 @@ def run_daily(args) -> None:
         days = ", ".join(d.strftime("%d.%m") for d, _ in previous)
         print(f"[info] учитываю прошлые выпуски для дедупликации: {days}")
 
-    print("[info] суммаризирую через claude -p…")
-    digest = summarize_with_claude(posts, date_human, previous)
+    print("[info] суммаризирую через LLM…")
+    digest = summarize_with_llm(posts, date_human, previous)
 
     if args.dry_run:
         print("\n" + "=" * 60 + "\n" + digest)
