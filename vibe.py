@@ -24,12 +24,12 @@ from datetime import datetime
 
 import httpx
 
-import digest  # переиспользуем вызов claude и публикацию
+import digest  # переиспользуем вызов LLM и публикацию
 
 TIMEZONE = digest.TIMEZONE
 BASE_DIR = digest.BASE_DIR
 
-VIBE_MODEL = os.environ.get("VIBE_MODEL", os.environ.get("CLAUDE_MODEL", "sonnet"))
+VIBE_MODEL = os.environ.get("VIBE_MODEL", digest.LLM_MODEL)
 VIBE_EVERY_DAYS = int(os.environ.get("VIBE_EVERY_DAYS", "2"))
 VIBE_STATE = BASE_DIR / "vibe_last.txt"      # дата последнего поста
 VIBE_REPOS = BASE_DIR / "vibe_repos.txt"     # уже показанные репозитории
@@ -75,11 +75,11 @@ REPO_PROMPT_TEMPLATE = """Ниже данные о популярном GitHub-�
 
 
 def make_joke() -> str:
-    return digest._run_claude(JOKE_PROMPT, VIBE_MODEL)
+    return digest._run_llm(JOKE_PROMPT, VIBE_MODEL)
 
 
 def make_future() -> str:
-    return digest._run_claude(FUTURE_PROMPT, VIBE_MODEL)
+    return digest._run_llm(FUTURE_PROMPT, VIBE_MODEL)
 
 
 def load_featured() -> set:
@@ -124,7 +124,7 @@ def choose_repo(candidates: list) -> dict:
     listing = "\n".join(
         f"- {c['full_name']} (звёзд {c.get('stargazers_count', 0)}): "
         f"{(c.get('description') or '')[:150]}" for c in candidates)
-    answer = digest._run_claude(SELECT_REPO_PROMPT + listing, VIBE_MODEL)
+    answer = digest._run_llm(SELECT_REPO_PROMPT + listing, VIBE_MODEL)
     m = re.search(r"[\w.-]+/[\w.-]+", answer)
     if m:
         pick = m.group(0).lower()
@@ -147,7 +147,7 @@ def make_repo() -> tuple:
         "language": repo.get("language") or "",
         "topics": (repo.get("topics") or [])[:8],
     }
-    text = digest._run_claude(
+    text = digest._run_llm(
         REPO_PROMPT_TEMPLATE.format(
             repo_json=json.dumps(data, ensure_ascii=False, indent=1)),
         VIBE_MODEL)

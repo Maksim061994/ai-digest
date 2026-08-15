@@ -19,12 +19,10 @@ services:
       VIBE_WINDOW_START: "18:00"
       VIBE_WINDOW_END: "20:00"
       VIBE_EVERY_DAYS: "2"
-      # Страховка: гарантированно пустой ключ, чтобы claude -p шёл в подписку, а не в платный API.
-      ANTHROPIC_API_KEY: ""
     volumes:
       # Код + channels.txt + файл сессии Telethon (digest_session.session) — на хосте, переживают пересборку.
       - .:/app
-    # Авторизация Claude — через CLAUDE_CODE_OAUTH_TOKEN из .env (env_file), volume не нужен.
+    # Доступ к LLM — через LLM_API_KEY / LLM_BASE_URL / LLM_MODEL из .env (env_file).
 
   # Бот управления списком каналов: слушает команды (/add, /remove, /list) и правит
   # channels.txt, который дайджест читает при следующем запуске. Тот же образ и mount.
@@ -36,8 +34,6 @@ services:
     container_name: ai-digest-bot
     restart: unless-stopped
     env_file: .env
-    environment:
-      ANTHROPIC_API_KEY: ""
     volumes:
       - .:/app
     command: python bot.py

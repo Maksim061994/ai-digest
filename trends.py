@@ -16,13 +16,13 @@ import argparse
 import os
 from datetime import datetime, timedelta
 
-import digest  # переиспользуем сбор постов и вызов claude
+import digest  # переиспользуем сбор постов и вызов LLM
 
 TIMEZONE = digest.TIMEZONE
 BASE_DIR = digest.BASE_DIR
 
-# Тренд-отчёт — разовый и аналитический, поэтому по умолчанию opus.
-TRENDS_MODEL = os.environ.get("TRENDS_MODEL", "opus")
+# Тренд-отчёт разовый и аналитический, поэтому по умолчанию модель сильнее обычной.
+TRENDS_MODEL = os.environ.get("TRENDS_MODEL", "gemini-3.7-flash")
 MSG_LIMIT = int(os.environ.get("TRENDS_MSG_LIMIT", "2000"))  # максимум сообщений на канал
 POST_CHARS = 500          # обрезка поста для сведения (тренды, не дословно)
 BATCH_CHARS = 60000       # размер батча для map-этапа
@@ -84,15 +84,15 @@ def main() -> None:
     lines = [f"[{p['datetime'][:10]}] @{p['channel']}: {p['text'][:POST_CHARS]} — {p['link']}"
              for p in posts]
     batches = make_batches(lines)
-    print(f"[info] map-этап: {len(batches)} батч(ей) через claude ({TRENDS_MODEL})…")
+    print(f"[info] map-этап: {len(batches)} батч(ей) через LLM ({TRENDS_MODEL})…")
 
     summaries = []
     for i, batch in enumerate(batches, 1):
         print(f"[info]   батч {i}/{len(batches)}…")
-        summaries.append(digest._run_claude(MAP_PROMPT.format(posts=batch), TRENDS_MODEL))
+        summaries.append(digest._run_llm(MAP_PROMPT.format(posts=batch), TRENDS_MODEL))
 
     print("[info] reduce-этап: синтез итогового документа…")
-    report_body = digest._run_claude(
+    report_body = digest._run_llm(
         REDUCE_PROMPT.format(period=period, summaries="\n\n".join(summaries)),
         TRENDS_MODEL)
 
