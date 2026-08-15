@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -50,6 +51,17 @@ LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "600"))
 # которые его не понимают и отвечают 400).
 LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "low").strip()
 
+# --------------------------------------------------------------- уведомления
+# Личный chat_id владельца для алертов о сбоях. Намеренно отдельная переменная,
+# а не BOT_ADMINS: админы управляют списком каналов, а про умерший ключ и
+# кончившуюся квоту должен узнавать тот, кто платит. Свой id можно узнать,
+# написав что угодно боту — он ответит «Ваш id: ...».
+ALERT_CHAT_ID = os.environ.get("ALERT_CHAT_ID", "").strip()
+# Один и тот же сбой повторяется каждый запуск (дайджест, разбор, вечерний пост),
+# поэтому одинаковые алерты шлём не чаще раза в N часов.
+ALERT_REPEAT_HOURS = float(os.environ.get("ALERT_REPEAT_HOURS", "12"))
+ALERT_STATE = BASE_DIR / "alert_state.json"
+
 # Список каналов-источников: по одному username на строку в channels.txt
 CHANNELS = [
     line.strip().lstrip("@")
@@ -63,6 +75,89 @@ TG_MESSAGE_LIMIT = 4096      # лимит Telegram на одно сообщен�
 HISTORY_DIR = BASE_DIR / "history"   # сюда сохраняются опубликованные дайджесты
 # Сколько прошлых выпусков показывать модели, чтобы не повторять вчерашние новости
 LOOKBACK_DAYS = int(os.environ.get("DEDUP_LOOKBACK_DAYS", "2"))
+
+
+# --------------------------------------------------------- алерты о сбоях
+
+
+class LLMError(RuntimeError):
+    """Ошибка обращения к модели с разобранной причиной.
+
+    `kind` — короткий машинный признак (key / quota / billing / model / ...),
+    по нему же группируются повторные уведомления.
+    """
+
+    def __init__(self, message: str, kind: str = "unknown", detail: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.detail = detail
+
+
+def notify_owner(text: str) -> None:
+    """Шлёт личное сообщение владельцу. Не бросает исключений: уведомление —
+    побочный эффект, и его поломка не должна подменять исходную ошибку.
+
+    Отправляется без parse_mode: в тексте бывают угловые скобки из ответа API,
+    и с HTML-разметкой Telegram отверг бы такое сообщение целиком.
+    """
+    if not ALERT_CHAT_ID:
+        print("[warn] ALERT_CHAT_ID не задан — уведомление не отправлено", file=sys.stderr)
+        return
+    try:
+        r = httpx.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": ALERT_CHAT_ID, "text": text[:4000],
+                  "disable_web_page_preview": True},
+            timeout=30,
+        )
+        if r.status_code != 200:
+            print(f"[warn] уведомление не ушло: {r.text[:200]}", file=sys.stderr)
+    except Exception as e:
+        print(f"[warn] уведомление не ушло: {e!r}", file=sys.stderr)
+
+
+def _alert_throttled(key: str) -> bool:
+    """True, если такой же алерт уже отправляли меньше ALERT_REPEAT_HOURS назад."""
+    now = time.time()
+    try:
+        state = json.loads(ALERT_STATE.read_text(encoding="utf-8"))
+    except Exception:
+        state = {}
+    if now - float(state.get(key, 0)) < ALERT_REPEAT_HOURS * 3600:
+        return True
+    state[key] = now
+    try:
+        ALERT_STATE.write_text(json.dumps(state), encoding="utf-8")
+    except Exception as e:
+        print(f"[warn] не сохранил состояние алертов: {e!r}", file=sys.stderr)
+    return False
+
+
+@contextmanager
+def alert_on_failure(job: str):
+    """Ловит падение задачи, шлёт владельцу диагноз и пробрасывает исключение
+    дальше — чтобы код возврата остался ненулевым и планировщик записал сбой."""
+    try:
+        yield
+    except Exception as e:
+        if isinstance(e, LLMError):
+            kind, summary, detail = e.kind, str(e), e.detail
+        else:
+            kind, summary, detail = f"other:{type(e).__name__}", f"{type(e).__name__}: {e}", ""
+
+        if _alert_throttled(f"{job}:{kind}"):
+            print(f"[info] про «{kind}» уже уведомляли — молчу", file=sys.stderr)
+        else:
+            lines = [f"🔴 ai-digest: {job} — сбой", "", summary]
+            if detail:
+                lines += ["", detail[:600]]
+            lines += ["",
+                      f"Время: {datetime.now(TIMEZONE).strftime('%d.%m.%Y %H:%M')}",
+                      f"Повтор такого уведомления — не чаще раза в "
+                      f"{ALERT_REPEAT_HOURS:g} ч."]
+            notify_owner("\n".join(lines))
+        raise
+
 
 # ---------------------------------------------------------------- сбор постов
 
@@ -185,6 +280,48 @@ PROMPT_TEMPLATE = """Ты — редактор ежедневного дайдж
 
 RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504, 529}
 
+# Диагноз по полю error.status, а НЕ по HTTP-коду: Gemini на протухший ключ
+# отвечает 400 (INVALID_ARGUMENT), а не 401, так что проверка по коду промахнётся.
+LLM_DIAGNOSIS = {
+    "UNAUTHENTICATED": ("key", "Ключ не принят — недействителен или отозван."),
+    "PERMISSION_DENIED": ("billing", "Доступ запрещён: отключён биллинг либо у ключа нет прав на эту модель."),
+    "RESOURCE_EXHAUSTED": ("quota", "Исчерпана квота или закончились средства на аккаунте."),
+    "NOT_FOUND": ("model", "Модель недоступна для этого ключа — проверьте LLM_MODEL."),
+}
+
+
+def _parse_api_error(resp) -> tuple[str, str]:
+    """Достаёт (status, message) из тела ошибки.
+
+    Gemini заворачивает ошибку в JSON-массив — `[{"error": {...}}]`, — поэтому
+    наивный resp.json()["error"] падает с TypeError.
+    """
+    try:
+        body = resp.json()
+        if isinstance(body, list):
+            body = body[0] if body else {}
+        err = body.get("error", {}) if isinstance(body, dict) else {}
+        return str(err.get("status", "")), str(err.get("message", ""))
+    except Exception:
+        return "", resp.text[:300]
+
+
+def _classify_llm_error(resp) -> LLMError:
+    status, message = _parse_api_error(resp)
+    kind, summary = LLM_DIAGNOSIS.get(status, ("", ""))
+    # INVALID_ARGUMENT прилетает и на битый ключ, и на кривой запрос —
+    # различаем по тексту сообщения.
+    if not kind and status == "INVALID_ARGUMENT":
+        if "api key" in message.lower():
+            kind, summary = "key", "Ключ недействителен или отозван."
+        else:
+            kind, summary = "request", "Провайдер отверг запрос."
+    if not kind:
+        kind = f"http{resp.status_code}"
+        summary = f"Провайдер вернул HTTP {resp.status_code}."
+    return LLMError(summary, kind=kind,
+                    detail=f"HTTP {resp.status_code} {status}\n{message or resp.text[:300]}")
+
 
 def _run_llm(prompt: str, model: str | None = None) -> str:
     """Один запрос к OpenAI-совместимому /chat/completions; чистит и валидирует ответ.
@@ -207,6 +344,7 @@ def _run_llm(prompt: str, model: str | None = None) -> str:
         payload["reasoning_effort"] = LLM_REASONING_EFFORT
 
     last_err = None
+    last_status = None
     for attempt in range(4):
         if attempt:
             time.sleep(5 * 2 ** (attempt - 1))
@@ -222,19 +360,20 @@ def _run_llm(prompt: str, model: str | None = None) -> str:
             continue
 
         if r.status_code in RETRYABLE_STATUS:
+            last_status = r.status_code
             last_err = f"HTTP {r.status_code}: {r.text[:300]}"
             continue
         if r.status_code >= 400:
-            # 400/401/403 не лечатся повтором — падаем сразу с телом ответа
-            raise RuntimeError(f"LLM вернул HTTP {r.status_code}:\n{r.text[:2000]}")
+            # 400/403/404 повтором не лечатся — падаем сразу с разобранным диагнозом
+            raise _classify_llm_error(r)
 
         choice = r.json()["choices"][0]
         # finish_reason=length означает обрыв на полуслове: HTML будет битым,
         # а Telegram опубликует его как есть. Лучше упасть, чем запостить огрызок.
         if choice.get("finish_reason") == "length":
-            raise RuntimeError(
+            raise LLMError(
                 f"Ответ обрезан по лимиту в {LLM_MAX_TOKENS} токенов — "
-                f"поднимите LLM_MAX_TOKENS")
+                f"поднимите LLM_MAX_TOKENS.", kind="truncated")
         text = (choice["message"].get("content") or "").strip()
         if not text:
             last_err = f"пустой ответ (finish_reason={choice.get('finish_reason')})"
@@ -242,7 +381,14 @@ def _run_llm(prompt: str, model: str | None = None) -> str:
         # на случай, если модель всё же обернула ответ в ```
         return re.sub(r"^```(?:html|markdown)?\s*|\s*```$", "", text).strip()
 
-    raise RuntimeError(f"LLM не ответил после 4 попыток. Последняя ошибка — {last_err}")
+    # 429, переживший все ретраи, — это почти наверняка не всплеск нагрузки,
+    # а исчерпанная квота: минутный лимит за полминуты пауз успел бы отпустить.
+    if last_status == 429:
+        raise LLMError("Исчерпана квота или закончились средства на аккаунте "
+                       "(429 не отпустил за 4 попытки).",
+                       kind="quota", detail=str(last_err))
+    raise LLMError(f"Провайдер недоступен: 4 попытки подряд без успеха.",
+                   kind="unavailable", detail=str(last_err))
 
 
 def summarize_with_llm(posts: list[dict], date_human: str,
@@ -421,9 +567,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.weekly:
-        run_weekly(args)
+        with alert_on_failure("недельный обзор"):
+            run_weekly(args)
     else:
-        run_daily(args)
+        with alert_on_failure("ежедневный дайджест"):
+            run_daily(args)
 
 
 if __name__ == "__main__":

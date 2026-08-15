@@ -213,7 +213,7 @@ def send_document(chat_id, path, caption=""):
         send(chat_id, "Ошибка при отправке файла.")
 
 
-# Сбор трендов долгий (Telethon + много вызовов opus) — гоняем в фоне, чтобы не
+# Сбор трендов долгий (Telethon + много вызовов LLM) — гоняем в фоне, чтобы не
 # блокировать цикл бота. Lock не даёт запустить два сбора одновременно.
 _trends_lock = threading.Lock()
 
@@ -222,7 +222,7 @@ def build_trends_async(chat_id):
     if not _trends_lock.acquire(blocking=False):
         send(chat_id, "Я уже собираю отчёт о трендах — пришлю, как будет готов.")
         return
-    send(chat_id, "Собираю тренды за 3 месяца (opus, map-reduce). Это несколько минут — "
+    send(chat_id, "Собираю тренды за 3 месяца (map-reduce). Это несколько минут — "
                   "пришлю файл, как только будет готово.")
 
     def worker():

@@ -200,7 +200,8 @@ def main() -> None:
     p.add_argument("--type", choices=["joke", "future", "repo"],
                    help="принудительно выбрать тип поста")
     p.add_argument("--force", action="store_true", help="игнорировать интервал")
-    run(p.parse_args())
+    with digest.alert_on_failure("вечерний пост"):
+        run(p.parse_args())
 
 
 if __name__ == "__main__":

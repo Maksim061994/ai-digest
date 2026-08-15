@@ -285,7 +285,8 @@ def main() -> None:
                         help="не постить, вывести разбор в stdout")
     parser.add_argument("--date", help="дата отсчёта окна поиска YYYY-MM-DD (по умолчанию сегодня)")
     parser.add_argument("--id", help="принудительно разобрать конкретный arXiv id")
-    run(parser.parse_args())
+    with digest.alert_on_failure("научный разбор статьи"):
+        run(parser.parse_args())
 
 
 if __name__ == "__main__":
